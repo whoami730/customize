@@ -1,31 +1,34 @@
 #!/bin/bash
 
-# Adapted to bash
-# Git version checking
+#
+# Internals
+#
 
-# replacement to "autoload -Uz is-at-least ""
+# replacement to "autoload -Uz is-at-least"
 is_at_least() {
     local required_version=$1
     local current_version=$2
+    local -a required_array current_array
 
-    # Convert version strings to arrays of numbers
     IFS='.' read -r -a required_array <<< "$required_version"
     IFS='.' read -r -a current_array <<< "$current_version"
 
-    # Compare each component of the versions
+    local i req cur
     for ((i=0; i<${#required_array[@]}; i++)); do
-        if [[ ${required_array[i]:-0} -gt ${current_array[i]:-0} ]]; then
-            return 1
-        fi
+        req=${required_array[i]:-0}
+        cur=${current_array[i]:-0}
+        (( cur > req )) && return 0
+        (( cur < req )) && return 1
     done
 
     return 0
 }
 
-# git_version="${${(As: :)$(git version 2>/dev/null)}[3]}"
 git_version=$(git --version | cut -d ' ' -f 3)
 
-# This is from lib/git.zsh file
+#
+# Prompt helpers (from lib/git.zsh)
+#
 
 # The git prompt's git commands are read-only and should not interfere with
 # other processes. This environment variable is equivalent to running with `git
@@ -83,18 +86,15 @@ function git_current_user_email() {
 function git_repo_name() {
   local repo_path
   if repo_path="$(__git_prompt_git rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$repo_path" ]]; then
-    echo ${repo_path:t}
+    echo ${repo_path##*/}
   fi
 }
 
-# Main thing starts now
-# Uncomment most checks and aliases in future
 alias oh='less ~/customize/git_functions.sh'
 
 #
-# Functions Current
+# Functions
 # (sorted alphabetically by function name)
-# (order should follow README)
 #
 
 # The name of the current branch
@@ -103,6 +103,13 @@ alias oh='less ~/customize/git_functions.sh'
 # to fix the core -> git plugin dependency.
 function current_branch() {
   git_current_branch
+}
+
+# List branches sorted by most recent commit; optional arg limits count (default 20)
+function gbranches() {
+  git for-each-ref --sort=-committerdate refs/heads/ \
+    --format='%(color:yellow)%(refname:short)%(color:reset) %(color:green)(%(committerdate:relative))%(color:reset) %(authorname)' \
+    --color=always | head -"${1:-20}"
 }
 
 # Check for develop and similarly named branches
@@ -123,11 +130,21 @@ function git_develop_branch() {
 # Check if main exists and use instead of master
 function git_main_branch() {
   command git rev-parse --git-dir &>/dev/null || return
-  local ref
+
+  local remote ref
+
   for ref in refs/{heads,remotes/{origin,upstream}}/{main,trunk,mainline,default,stable,master}; do
     if command git show-ref -q --verify $ref; then
-      echo ${ref:t}
+      echo ${ref##*/}
       return 0
+    fi
+  done
+
+  # Fallback: try to get the default branch from remote HEAD symbolic refs
+  for remote in origin upstream; do
+    ref=$(command git rev-parse --abbrev-ref $remote/HEAD 2>/dev/null)
+    if [[ $ref == $remote/* ]]; then
+      echo ${ref#"$remote/"}; return 0
     fi
   done
 
@@ -151,14 +168,13 @@ function grename() {
 }
 
 #
-# Functions Work in Progress (WIP)
-# (sorted alphabetically by function name)
-# (order should follow README)
+# WIP helpers
 #
 
 # Similar to `gunwip` but recursive "Unwips" all recent `--wip--` commits not just the last one
 function gunwipall() {
-  local _commit=$(git log --grep='--wip--' --invert-grep --max-count=1 --format=format:%H)
+  local _commit
+  _commit=$(git log --grep='--wip--' --invert-grep --max-count=1 --format=format:%H)
 
   # Check if a commit without "--wip--" was found and it's not the same as HEAD
   if [[ "$_commit" != "$(git rev-parse HEAD)" ]]; then
@@ -174,8 +190,6 @@ function work_in_progress() {
 #
 # Aliases
 # (sorted alphabetically by command)
-# (order should follow README)
-# (in some cases force the alisas order to match README, like for example gke and gk)
 #
 
 alias grt='cd "$(git rev-parse --show-toplevel || echo .)"'
@@ -224,7 +238,8 @@ function gbda() {
 # Copied and modified from James Roeder (jmaroeder) under MIT License
 # https://github.com/jmaroeder/plugin-git/blob/216723ef4f9e8dde399661c39c80bdf73f4076c4/functions/gbda.fish
 function gbds() {
-  local default_branch=$(git_main_branch)
+  local default_branch
+  default_branch=$(git_main_branch)
   (( ! $? )) || default_branch=$(git_develop_branch)
 
   git for-each-ref refs/heads/ "--format=%(refname:short)" | \
@@ -236,8 +251,8 @@ function gbds() {
     done
 }
 
-# alias gbgd='LANG=C git branch --no-color -vv | grep ": gone\]" | cut -c 3- | awk '"'"'{print $1}'"'"' | xargs git branch -d'
-# alias gbgD='LANG=C git branch --no-color -vv | grep ": gone\]" | cut -c 3- | awk '"'"'{print $1}'"'"' | xargs git branch -D'
+alias gbgd='LANG=C git branch --no-color -vv | grep ": gone\]" | cut -c 3- | awk '"'"'{print $1}'"'"' | xargs git branch -d'
+alias gbgD='LANG=C git branch --no-color -vv | grep ": gone\]" | cut -c 3- | awk '"'"'{print $1}'"'"' | xargs git branch -D'
 alias gbm='git branch --move'
 alias gbnm='git branch --no-merged'
 alias gbr='git branch --remote'
@@ -256,20 +271,23 @@ alias gclean='git clean --interactive -d'
 alias gcl='git clone --recurse-submodules'
 alias gclf='git clone --recursive --shallow-submodules --filter=blob:none --also-filter-submodules'
 
-# function gccd() {
-#   setopt localoptions extendedglob
-
-#   # get repo URI from args based on valid formats: https://git-scm.com/docs/git-clone#URLS
-#   local repo="${${@[(r)(ssh://*|git://*|ftp(s)#://*|http(s)#://*|*@*)(.git/#)#]}:-$_}"
-
-#   # clone repository and exit if it fails
-#   command git clone --recurse-submodules "$@" || return
-
-#   # if last arg passed was a directory, that's where the repo was cloned
-#   # otherwise parse the repo URI and use the last part as the directory
-#   [[ -d "$_" ]] && cd "$_" || cd "${${repo:t}%.git/#}"
-# }
-# # compdef _git gccd=git-clone
+# clone a repo and cd into it
+function gccd() {
+  local repo dir arg last="${@: -1}"
+  # find the repo URI: last non-option argument
+  for arg in "$@"; do
+    [[ "$arg" == -* ]] || repo="$arg"
+  done
+  command git clone --recurse-submodules "$@" || return
+  # if the last arg is a non-option and differs from the URI, it's an explicit target dir
+  if [[ "$last" != -* && "$last" != "$repo" ]]; then
+    dir="$last"
+  else
+    dir="${repo##*/}"
+    dir="${dir%.git}"
+  fi
+  cd "$dir"
+}
 
 alias gcam='git commit --all --message'
 alias gcas='git commit --all --signoff'
@@ -332,7 +350,7 @@ alias gloga='git log --oneline --decorate --graph --all'
 
 # Pretty log messages
 function _git_log_prettily(){
-  if ! [ -z $1 ]; then
+  if [[ -n "$1" ]]; then
     git log --pretty=$1
   fi
 }
@@ -360,8 +378,9 @@ alias gpra='git pull --rebase --autostash'
 alias gprav='git pull --rebase --autostash -v'
 
 function ggu() {
-  [[ "$#" != 1 ]] && local b="$(git_current_branch)"
-  git pull --rebase origin "${b:=$1}"
+  local b
+  [[ "$#" != 1 ]] && b="$(git_current_branch)"
+  git pull --rebase origin "${b:-$1}"
 }
 # compdef _git ggu=git-checkout
 
@@ -375,8 +394,9 @@ function ggl() {
   if [[ "$#" != 0 ]] && [[ "$#" != 1 ]]; then
     git pull origin "${*}"
   else
-    [[ "$#" == 0 ]] && local b="$(git_current_branch)"
-    git pull origin "${b:=$1}"
+    local b
+    [[ "$#" == 0 ]] && b="$(git_current_branch)"
+    git pull origin "${b:-$1}"
   fi
 }
 # compdef _git ggl=git-checkout
@@ -387,8 +407,9 @@ alias gp='git push'
 alias gpd='git push --dry-run'
 
 function ggf() {
-  [[ "$#" != 1 ]] && local b="$(git_current_branch)"
-  git push --force origin "${b:=$1}"
+  local b
+  [[ "$#" != 1 ]] && b="$(git_current_branch)"
+  git push --force origin "${b:-$1}"
 }
 # compdef _git ggf=git-checkout
 
@@ -399,8 +420,9 @@ is_at_least "2.30" "$git_version" \
    || alias gpf='git push --force-with-lease'
 
 function ggfl() {
-  [[ "$#" != 1 ]] && local b="$(git_current_branch)"
-  git push --force-with-lease origin "${b:=$1}"
+  local b
+  [[ "$#" != 1 ]] && b="$(git_current_branch)"
+  git push --force-with-lease origin "${b:-$1}"
 }
 # compdef _git ggfl=git-checkout
 
@@ -418,8 +440,9 @@ function ggp() {
   if [[ "$#" != 0 ]] && [[ "$#" != 1 ]]; then
     git push origin "${*}"
   else
-    [[ "$#" == 0 ]] && local b="$(git_current_branch)"
-    git push origin "${b:=$1}"
+    local b
+    [[ "$#" == 0 ]] && b="$(git_current_branch)"
+    git push origin "${b:-$1}"
   fi
 }
 # compdef _git ggp=git-checkout
@@ -492,32 +515,15 @@ alias gts='git tag --sign'
 alias gtv='git tag | sort -V'
 alias gignore='git update-index --assume-unchanged'
 alias gunignore='git update-index --no-assume-unchanged'
-alias gwch='git whatchanged -p --abbrev-commit --pretty=medium'
+alias gwch='git log --patch --abbrev-commit --pretty=medium --raw'
 alias gwt='git worktree'
 alias gwta='git worktree add'
 alias gwtls='git worktree list'
 alias gwtmv='git worktree move'
 alias gwtrm='git worktree remove'
 alias gstu='gsta --include-untracked'
-# alias gtl='gtl(){ git tag --sort=-v:refname -n --list "${1}*" }; noglob gtl'
+function gtl() { git tag --sort=-v:refname -n --list "${1}*"; }
 alias gk='\gitk --all --branches &!'
 alias gke='\gitk --all $(git log --walk-reflogs --pretty=%h) &!'
 
 unset git_version
-
-# Logic for adding warnings on deprecated aliases
-# local old_alias new_alias
-# for old_alias new_alias (
-# TODO(2023-10-19): remove deprecated `git pull --rebase` aliases
-#  gup     gpr
-#  gupv    gprv
-#  gupa    gpra
-#  gupav   gprav
-#  gupom   gprom
-#  gupomi  gpromi
-#); do
-#  aliases[$old_alias]="
-#    print -Pu2 \"%F{yellow}[oh-my-zsh] '%F{red}${old_alias}%F{yellow}' is a deprecated alias, using '%F{green}${new_alias}%F{yellow}' instead.%f\"
-#    $new_alias"
-# done
-# unset old_alias new_alias
